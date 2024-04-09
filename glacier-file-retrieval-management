@@ -1,0 +1,136 @@
+def datesList = []
+def sourceList = source_name.split("\n")
+def crawlTypeList = crawl_type.split("\n")
+//def sourceString = " -ie " + source_name.replaceAll("\n", " -ie ")
+
+try
+{
+    node
+    {
+        stage('Clean workspace'){
+            cleanWs()   
+            dir("${env.WORKSPACE}@tmp") {
+                deleteDir()
+            }
+            dir("${env.WORKSPACE}@script") {
+                deleteDir()
+            }
+            dir("${env.WORKSPACE}@script@tmp") {
+                deleteDir()
+            }
+        }
+        stage('Dates Computation'){
+            Date dateFrom = Date.parse("yyyy-MM-dd", start_date)
+            Date dateTo = Date.parse("yyyy-MM-dd", end_date)
+            def diffMonths = { Date start, Date end ->
+                int diffYears = (start[Calendar.YEAR] - end[Calendar.YEAR]) * 12 
+                int diffMonths = start[Calendar.MONTH] - end[Calendar.MONTH] 
+                return diffYears + diffMonths
+            }
+
+            monthDiff = diffMonths(dateTo, dateFrom)
+            for(count=0;count<=monthDiff;count++)
+            {
+                d = new GregorianCalendar() 
+                d.setTime(dateTo)  // sets to the current date/time
+                d.add(Calendar.MONTH, -count)  // Increases the date by 5 months
+                println d.getTime().format('yyyyMM')
+                datesList.add(d.getTime().format('yyyyMM'))
+            }
+            println "${datesList}"
+        
+        }  
+        stage('Retrieve files from glacier')
+        {
+           withAWS(credentials: 'jenkins-aws-access-keys', region: 'us-east-1') 
+           {
+               for(date in datesList)
+               {
+					if(bucket_name == "dw-json-dumps")
+					{	
+						 sh	'''
+									aws s3 ls s3://$bucket_name/pl_da_all_crawls/'''+date.substring(0, Math.min(date.length(), 4))+'''/'''+date.substring(4, Math.min(date.length(), 6))+'''/ --recursive >> filesList.txt
+								'''
+					}
+					else
+					{
+					   sh		'''
+									aws s3 ls s3://$bucket_name/'''+date+'''/ --recursive >> filesList.txt
+								'''
+					}
+               }
+               for(source in sourceList)
+               {
+                   if(source == "ALL")
+                    {
+                        for(type in crawlTypeList)
+                        {
+                            if(type == "ALL")
+                            {
+                                 sh "cat filesList.txt | awk -F ' ' '{print \$4}' >> files"
+                            }
+                            
+                            else sh "cat filesList.txt | grep -i .*$type  | awk -F ' ' '{print \$4}' >> files"
+                        }
+                    }
+                    else 
+                    {
+                        for(type in crawlTypeList)
+                        {
+                             if(type == "ALL")
+                            {
+                                 sh "cat filesList.txt  | grep -i $source | awk -F ' ' '{print \$4}' >> files"
+                            }
+                            else sh "cat filesList.txt | grep -i $source.*$type  | awk -F ' ' '{print \$4}' >> files"
+                        }
+                    }
+				}
+               //Retrieve files from glacier
+				sh	'''
+							while read line;do aws s3api restore-object --bucket '''+bucket_name+''' --restore-request '{"Days" :5,"GlacierJobParameters":{"Tier":"Standard"}}' --key $line || true; done < files
+						'''  
+			}
+        }
+        stash 'files'
+        currentBuild.result = 'SUCCESS'
+    }
+    sleep time: 6, unit: 'HOURS'
+    node
+    {
+        unstash 'files'
+        stage('Copy files to temp bucket')
+        {
+            withAWS(credentials: 'jenkins-aws-access-keys', region: 'us-east-1')
+            {
+                sh  '''
+                        while read line; do aws s3 cp s3://'''+bucket_name+'''/$line s3://dataweave-tmp/$jira_ticket/; done < files
+                    '''
+            }
+        }
+    }
+}
+catch (e){
+    // Since we're catching the exception in order to report on it,
+    // we need to re-throw it, to ensure that the build is marked as failed
+    echo "I failed"
+    currentBuild.result = 'FAILURE'
+    throw e
+}
+finally {
+    
+    //echo "build result = " + currentBuild.result
+    if (currentBuild.result != 'SUCCESS') {
+        echo 'I am unstable :/'
+    } else {
+        echo 'One way or another, I have finished'
+    }
+    def currentResult = currentBuild.result
+    //echo "currentResult = " + currentResult
+    
+    stage('Email Recipients'){
+        emailext attachLog: true, body: '''
+            Check console output at $BUILD_URL to view the results.
+
+            ''', recipientProviders: [buildUser()], subject: "${jira_ticket} - ${JOB_NAME} - Build # $BUILD_NUMBER - $currentResult", to: 'sunil.gadhe@dataweave.com'
+    }
+}

@@ -1,0 +1,143 @@
+node{
+    stage("$operation_type : $username"){
+        withCredentials([file(credentialsId: 'crawl_v3', variable: 'crawl_v3')]) {
+            def does_user_exist = sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@de.workspace.dweave.net getent passwd $username"
+            echo "does_user_exist - " + does_user_exist
+            switch(operation_type) {
+              case "new_user":
+                result = createNewUser(does_user_exist)
+                if(result == 0){
+                    echo "SUCCESS"
+                    currentBuild.result = 'SUCCESS'
+                    sendEmail(currentBuild.result)
+                }
+                else {
+                    echo "FAILURE"
+                    currentBuild.result = 'FAILURE'
+                    sendEmail(currentBuild.result)
+                }
+                break
+              case "update_ssh":
+                result = updateUser(does_user_exist)
+                if(result == 0){
+                    echo "SUCCESS"
+                    currentBuild.result = 'SUCCESS'
+                    sendEmail(currentBuild.result)
+                }
+                else{
+                    echo "FAILURE"
+                    currentBuild.result = 'FAILURE'
+                    sendEmail(currentBuild.result)
+                }
+                break
+              case "delete_user":
+                result = deleteUser(does_user_exist)
+                if(result == 0){
+                    echo "SUCCESS"
+                    currentBuild.result = 'SUCCESS'
+                    sendEmail(currentBuild.result)
+                }
+                else{
+                    echo "FAILURE"
+                    currentBuild.result = 'FAILURE'
+                    sendEmail(currentBuild.result)
+                }
+                break
+            }
+        }
+    }
+}
+
+def createNewUser(does_user_exist){
+    if(does_user_exist == 0){
+        echo "user already exist! failing the build"
+        return -1;
+    }
+    else {
+        def user_creation_result = sh returnStatus: true, script:  '''  ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@de.workspace.dweave.net <<ENDSSH
+                echo "adding new user - $username"
+                sudo su -s /bin/bash root
+                whoami
+                adduser --quiet --disabled-password --shell /bin/bash --home /HDD1/$username --gecos "User" $username
+                # set password
+                echo "\$username:dw#@!dev" | chpasswd
+                su $username
+                whoami
+                cd && ssh-keygen -q -t rsa -N \'\' -f ~/.ssh/id_rsa <<<y 2>&1 >/dev/null
+                if [ $? -eq 0 ];then
+                    echo "keygen successful"
+                else
+                    echo "keygen failed!"
+                fi
+                echo "ssh key = \$ssh_key"
+                echo $ssh_key > /HDD1/$username/.ssh/authorized_keys
+                
+ENDSSH'''
+        echo "user_creation_result = " + user_creation_result
+        return user_creation_result
+    }
+}
+
+def updateUser(does_user_exist){
+    if(does_user_exist != 0){
+        echo "user doesnot exist! failing the build"
+        return -1;
+    }
+    else {
+        def user_updation_result = sh returnStatus: true, script:  '''  ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@de.workspace.dweave.net <<ENDSSH
+            echo "adding new user - $username"
+            sudo su -s /bin/bash root
+            whoami
+            su $username
+            whoami
+            echo "ssh key = \$ssh_key"
+            echo $ssh_key > /HDD1/$username/.ssh/authorized_keys
+ENDSSH'''
+        echo "user_updation_result = " + user_updation_result
+        return user_updation_result
+    }
+}
+
+def deleteUser(does_user_exist){
+    if(does_user_exist != 0){
+        echo "user doesnot exist! failing the build"
+        return -1;
+    }
+    else {
+        def user_deletion_result = sh returnStatus: true, script:  '''  ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@de.workspace.dweave.net <<ENDSSH
+            echo "adding new user - $username"
+            sudo su -s /bin/bash root
+            whoami
+            userdel -rf $username
+ENDSSH'''
+        echo "user_deletion_result = " + user_deletion_result
+        return user_deletion_result
+    }
+}
+
+def sendEmail(build_result){
+    echo "build_result = " + build_result
+    if(operation_type.equals("new_user") && build_result.equals("SUCCESS"))
+    {
+        emailext body: '''  Hi, 
+                                    Here is the username on the workspace:  $username
+                                    Usage: ssh $username@de.workspace.dweave.net
+                                    
+                                    Donts:
+                                    Don\'t copy any files to /tmp/, This can be deleted anytime
+                                    Don\'t keep any unnecessary files in your workspace, It unnecessary adds up disk space 
+                                    Don\'t run any production crawls in Workspace, It is just a testing space for your plugins.
+                                    Even if a user has sudo access then don’t delete data from a different user (only admin will take that call), By the way, we can trace back who deleted the file from service provider interface.
+                                    Dos:
+                                    Make sure every line of code you write is committed to git and merged
+                                    In your workspace, if you want to keep some data, Please gzip and keep.
+                                    For each folder you create in your workspace, please add a readme file, which has information about what data it is, which project, how long this data is needed.so that this info can be used to delete/persist the data automatically.if it is not present then it will be deleted by default.
+                                    
+                                    ''', subject: "workspace operation : $operation_type - $username - $build_result", to: "$user_email_id"
+    }
+    else {
+        emailext body: '''operation type : $operation_type
+Username - $username
+Provided ssh key : $ssh_key''', subject: "workspace operation : $operation_type - $username - $build_result", to: '$user_email_id'
+    }
+}

@@ -1,0 +1,102 @@
+[12:18, 25/01/2024] Qais_dw: node{
+    stage("$operation_type : $username"){
+        withCredentials([file(credentialsId: 'crawl_v3', variable: 'crawl_v3')]) {
+            def does_user_exist = sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@de.workspace.dweave.net getent passwd $username"
+            echo "does_user_exist - " + does_user_exist
+            switch(operation_type) {
+              case "new_user":
+                result = createNewUser(does_user_exist)
+                if(result == 0){
+                    echo "SUCCESS"
+                    currentBuild.result = 'SUCCESS'
+                    sendEmail(currentBuild.result)
+                }
+                else {
+                    echo "FAILURE"
+                    currentBuild.result = '…
+[12:19, 25/01/2024] Qais_dw: node{
+    stage("$operation_type : $username"){
+        withCredentials([file(credentialsId: 'crawl_v3', variable: 'crawl_v3')]) {
+            def does_user_exist = sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@ftp-us-east1.dweave.net getent passwd $username"
+            echo "does_user_exist - " + does_user_exist
+            def password = sh returnStdout: true, script: 'openssl rand -base64 10'
+            echo "password = " + password
+            switch(operation_type) {
+              case "new_user":
+                result = createNewUser(does_user_exist, password)
+                if(result == 0){
+                    echo "SUCCESS"
+                    currentBuild.result = 'SUCCESS'
+                    sendEmail(currentBuild.result, password)
+                }
+                else {
+                    echo "FAILURE"
+                    currentBuild.result = 'FAILURE'
+                    sendEmail(currentBuild.result, password) 
+                }
+                break
+            }
+        }
+    }
+}
+
+def createNewUser(does_user_exist, password){
+    if(does_user_exist == 0){
+        echo "user already exist! failing the build"
+        return -1;
+    }
+    else {
+        def user_creation_result = sh returnStatus: true, script:  '''  ssh -o StrictHostKeyChecking=no -i $crawl_v3 ubuntu@ftp-us-east1.dweave.net <<ENDSSH
+                echo "adding new user - $username"
+                sudo su -s /bin/bash root
+                whoami
+                adduser --quiet --disabled-password --shell /bin/bash --home /HDD1/$username --gecos "User" $username
+                echo $password
+                echo "$username:'''+password+'''" | chpasswd
+                cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+                cat <<EOT >> /etc/ssh/sshd_config
+                
+Match User $username
+ForceCommand internal-sftp
+PasswordAuthentication yes
+ChrootDirectory /HDD1/$username
+PermitTunnel no
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+EOT
+                service ssh restart
+                cd /HDD1/$username/
+                mkdir $ftp_folder
+                chown $username:$username ./*
+                chown root /HDD1/$username
+                
+                if [ $? -eq 0 ];then
+                    echo "user creation successful"
+                else
+                    echo "user creation failed!"
+                fi
+ENDSSH'''
+        echo "user_creation_result = " + user_creation_result
+        return user_creation_result
+    }
+}
+
+def sendEmail(build_result, password){
+    echo "build_result = " + build_result
+    if(operation_type.equals("new_user") && build_result.equals("SUCCESS"))
+    {
+        emailext body: '''  Hi, 
+                                    FTP user created for $username:
+                                        username   : $username
+                                        password   : '''+password+'''
+                                        FTP folder : $ftp_folder
+                                        Usage: sftp $username@ftp-us-east1.dweave.net
+                                    
+                                    ''', subject: "FTP operation : $operation_type - $username - $build_result", to: "$user_email_id"
+    }
+    else {
+        emailext body: '''operation type : $operation_type
+Username - $username''', subject: "FTP operation : $operation_type - $username - $build_result", to: '$user_email_id'
+    }
+}

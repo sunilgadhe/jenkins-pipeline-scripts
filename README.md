@@ -4,3 +4,7 @@ This Jenkins pipeline script automates the process of retrieving files from AWS 
 
 **SFTP User Management**
 The provided Jenkins pipeline script is designed to handle operations related to creating an FTP user on a remote server, specifically using SSH to execute commands and send notifications based on the operation's outcome.
+
+
+**Workkspace User Management**
+Jenkins pipeline scripts that automate operations on a remote server, specifically for managing users (adding new users, updating SSH keys, and deleting users). 
